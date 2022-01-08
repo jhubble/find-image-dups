@@ -2,6 +2,8 @@
 use strict;
 use Cwd qw(getcwd);
 use Getopt::Std;
+use File::Copy;
+use File::Basename;
 
 my %options=();
 
@@ -21,7 +23,7 @@ findDups.pl
 Find duplicate images and organize library
 Jeremy Hubble Jan 8, 2022
 
--l filelist		Use filelist of all files for finding duplicates 
+-l filelist		Use filelist of all files for finding duplicates (REQUIRED for most)
 -m filelist		Create filelist (via exiftool)
 -f fingerprintfile	fingerprint file output using jdupes
 -p dupefile		dup file
@@ -75,8 +77,6 @@ my $FILE = $options{l};
 my $FPFILE = $options{f};
 my $DUPFILE = $options{p};
 my $VERBOSE = $options{v};
-#my $WORKING_DIR = "/mnt/c/Users/bh/Pictures";
-#my $DATA_DIR = "/mnt/c/Users/bh/phototxt";
 my $WORKING_DIR = $options{w};
 my $DATA_DIR = $options{d};
 
@@ -90,7 +90,7 @@ sub create_exif_list() {
 	my $OUTFILE = "$DATA_DIR".$options{m};
 	open F, ">$OUTFILE";
 	chdir($WORKING_DIR);
-	print F `exiftool -fast -fast2 -f -p '\$DateTimeOriginal	\$directory/\$filename	\$FileSize#	\$ImageWidth	\$ImageHeight	\$DocumentName' -r .`;
+	print F `exiftool -fast -fast2 -f -p '\$DateTimeOriginal	\$directory/\$filename	\$FileSize#	\$ImageWidth	\$ImageHeight	\$DocumentName#' -r .`;
 	close F;
 
 	print "Created $OUTFILE\n";
@@ -109,7 +109,7 @@ sub buildTimeHash {
 	my %HOA;
 	while(<F>) {
 		my $withBaseName = aug_basename($_);
-		my ($bname, $ts, $fname, $size, $width, $height) = split /\t/, $withBaseName;
+		my ($bname, $ts ) = split /\t/, $withBaseName;
 		if (!$HOA{$ts})  {
 			$HOA{$ts} = [];
 		}
@@ -299,7 +299,7 @@ sub sameHashDifferentDate {
 sub aug_basename {
 	my ($item) = @_;
 	chomp; 
-	my ($ts, $fname, $size, $width, $height) = split /\t/;
+	my ($ts, $fname) = split /\t/;
 	my $bname = $fname;
 	$bname =~ s/^.+\///;
 	$bname = lc($bname);
@@ -406,10 +406,13 @@ sub delete_small_width {
 	while(<F>) {
 		chomp; 
 		my ($ts, $fname, $size, $width, $height) = split /\t/;
-		if (!$HOA{$width})  {
-			$HOA{$width} = [];
+		# Only delete files that actually have a width
+		if ($width =~ /\d+/)  {
+			if (!$HOA{$width})  {
+				$HOA{$width} = [];
+			}
+			push @{$HOA{$width}}, $_;
 		}
-		push @{$HOA{$width}}, $_;
 	}
 	close F;
 	for my $width (sort {$a <=> $b} keys %HOA) {
@@ -437,9 +440,9 @@ sub delete_small_width {
 sub clean_deleted {
 	print "=========  CLEAN FILE LIST ==========\n";
 	my $oldList = "$DATA_DIR/$FILE";
-	my $newList = ">$DATA_DIR/new_$FILE";
+	my $newList = "$DATA_DIR/new_$FILE";
 	open F, $oldList;
-	open NEW, $newList;
+	open NEW, ">$newList";
 	if ($VERBOSE) {
 		print "OLD: $oldList\nNEW: $newList\n";
 		print getcwd, "\n";
@@ -467,6 +470,7 @@ sub clean_deleted {
 	close NEW;
 	print "$count files removed\n";
 	print "$totalsize space removed\n";
+	print "NEWLIST: $newList\n";
 }
 sub processFingerprints {
 	print "=========  TIME FINGERPRINT==========\n";
@@ -508,24 +512,43 @@ sub validateDirs {
 	for my $hashkey (sort keys %HOA) {
 		my @arr = reverse sort name_sort @{$HOA{$hashkey}};
 		foreach my $f (@arr) {
-			my ($bname, $ts, $fname, $size, $width, $height) = split /\t/, $f;
+			my ($bname, $ts, $fname, $size, $width, $height, $original) = split /\t/, $f;
 			$ts =~ m/(^\d\d\d\d)/;
 			my $year = $1;
 			$fname =~ m~./([^/]+)/~;
 			my $fileYear = $1;
 			if ($year ne $fileYear) {
-				#if ($year ne $fileYear && $fileYear - $year > 1) {
-				moveFiles($year,$fname);
-				print "$year $fileYear ",$f,"\n";
+				if ($VERBOSE) {
+					print "TO MOVE: $year $fileYear ",$f,"\n";
+				}
+				moveFile($year,$fname,$original);
 			}
 
 		}
 	}
 }
 
-sub moveFiles {
+sub moveFile {
+	my ($year, $fname, $original) = @_;
 	# move the files to directories
-	print `exiftool '\$DocumentName	\$directory/\$filename' \$fname`
+	if ($original ne $fname) {
+		print "==$original==\n==$fname==\n";
+		print `exiftool -P -overwrite_original -DocumentName='$fname' '$fname'`;
+	}
+	my $newdir = "$WORKING_DIR/$year";
+	my ($name, $path) = fileparse($fname);
+	if (-e "$newdir/$name") {
+		print "$newdir/$name already exists. Not moving\n";
+		return;
+	}
+	if (!-d $newdir) {
+		mkdir($newdir);
+	}
+	if (!-d $newdir) {
+		die "$newdir does not exist and could not create";
+	}
+	move($fname, $newdir);
+	
 }
 
 sub processDupList {
@@ -548,28 +571,36 @@ sub processDupList {
 }
 
 	
-if (options{"1"}) {
+if ($options{"1"}) {
 	delete_filterByTime();
 }
-if (options{"2"}) {
+if ($options{"2"}) {
 	delete_small_width();
 }
-if (options{"3"}) {
+if ($options{"3"}) {
 	delete_flickrSameName();
 }
-if (options{"s"}) {
+if ($options{"s"}) {
 	list_by_extension();
 }
-if (options{"4"}) {
+if ($options{"4"}) {
+	if (!$FPFILE) {
+		print "***Need fingerprint file to delete by fingerprints\n";
+		show_help();
+	}
 	processFingerprints();
 }
-if (options{"c"}) {
+if ($options{"c"}) {
 	clean_deleted();
 }
 # validate that files are in directory matching the exif data
-if (options{"5"}) {
+if ($options{"5"}) {
 	validateDirs();
 }
-if (options{"6"}) {
+if ($options{"6"}) {
+	if (!$DUPFILE) {
+		print "***Need dup file to process dup list\n";
+		show_help();
+	}
 	processDupList();
 }
