@@ -906,6 +906,10 @@ const getFilesRecursivelySync = (directory) => {
                           filepath : absolute,
                           size  : stats.size
                       }
+                      // doesn't quite work... maybe just hash the whole file?
+                      if (options.hash) {
+                          savedTags.hash = exifHash(absolute);
+                      }
                       /*
                       exifFields.forEach(field => {
                         if (tags.hasOwnProperty(field)) {
