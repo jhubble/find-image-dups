@@ -13,6 +13,9 @@ const crypto = require('crypto');
 const { execFileSync } = require('node:child_process');
 
 let dupCount = 0;
+let badCount = 0;
+let deleteCount = 0;
+let toDeleteCount = 0;
 
 const arrayOpts = ['skip', 'load', 'deletematch', 'dir','videodir'];
 const getOptions = (args) => {
@@ -116,6 +119,18 @@ log.info(`USAGE:
     -noyear                  Allow deleting files even if original not in correct year
     -closesize               Allow matching items that are within .1% of size
     -hash                    Compare hashes of image portion
+    -mkdir                   Make the directories for moving if not present
+
+Some Example commands:
+1. Use already processed list to favor keeping images in a sortedByYear directory, while removing flickr, Pacasa,WhatsApp, and /mnt/c dirs. Actually delete files
+    time node --max-old-space-size=4096 findImageDups.js -load d-*.json c-files-july.json -verbose TRACE -keepmatch sortedByYear -compare -picasa -nothumb -deletematch flickr Picasa WhatsApp /mnt/c -undefined -noyear -hash -stats -delete>c-del.txt
+
+2. Compare images using hashes and save to d-sortedByYear-2018.json 
+time node --max-old-space-size=4096 findImageDups.js -verbose TRACE -hash -dir /mnt/e/photos/sortedByYear/2018  -save d-sortedByYear-2018.json >d-sortedByYear-2018.txt
+
+3. Video compare
+time node findImageDups.js -verbose TRACE -videodir /mnt/e/photos/flickr -hash -save e-flickr-videos.json >e-flickr-videos.txt
+
 
 `);
 }        
@@ -171,7 +186,8 @@ const isYearDirectoryCorrect = (file, exif) => {
             const dateObj = new Date(exif);
             yearTaken = dateObj.getFullYear();
             if (!yearTaken || isNaN(yearTaken)) {
-                log.debug(`Unable to get date from: ${exif} (${dateObj})`);
+                log.debug(`BAD: Unable to get date from: ${exif} (${dateObj})`);
+                badCount++;
                 yearTaken = null;
             }
         }
@@ -230,7 +246,8 @@ const callExifTool = (itemsToLookup) => {
         return JSON.parse(exifdata);
     }
     catch (e) {
-        log.info("ERROR",e);
+        log.info("BAD ERROR",e);
+        badCount++;
         return [];
     }
 }
@@ -246,7 +263,8 @@ const exifHash = (file) => {
         return base64;
     }
     catch (e) {
-        log.error(`Unable to get hash for ${file}`,e);
+        log.error(`BAD Unable to get hash for ${file}`,e);
+        badCount++;
         }
     return null;
 }
@@ -303,13 +321,15 @@ const deleteFile = ({toDelete, src}) => {
         log.trace(`delete check: srcIsAtLeastAsBig: ${srcIsAtLeastAsBig} , slightlyLargerDelete: ${slightlyLargerDelete}`);
         if (srcIsAtLeastAsBig || slightlyLargerDelete) {
             if (options.keepmatch && toDelete.indexOf(options.keepmatch) !== -1 && src.indexOf(options.keepmatch) === -1) {
-                log.info(`${toDelete} matches ${keepmatch}, while src: ${src} does not, not deleting`);
+                log.info(`${toDelete} matches ${options.keepmatch}, while src: ${src} does not, not deleting`);
                 return false;
             }
 
+            toDeleteCount++;
             if (options.delete) {
                 fs.unlinkSync(toDelete);
                 log.info(`\tDELETED\t${toDelete}\tMATCH:\t${src}\tSIZE:\t${deleteStat.size - srcStat.size}\t${deleteStat.size}\t${srcStat.size}`);
+                deleteCount++;
                 return true;
             }
             else {
@@ -555,6 +575,7 @@ const compareNodes = (name,n1,n2, diffs, checks) => {
     
 const moveFile = (src, year) => {
     try {
+        log.trace(`====================== Trying to move ${src} =========`);
         if (!year || year == 'null') {
             log.trace(`not moving ${src} to nonexistant ${year}`);
         }
@@ -564,8 +585,14 @@ const moveFile = (src, year) => {
         }
         let newDir = `${options.movedir}/${year}`;
         if (!fs.existsSync(newDir)) {
-            log.warn(`not moving ${src} because ${newDir} does not exist`);
-            return false;
+            if (options.mkdir && options.move) {
+                log.trace(`Creating directory: ${newDir}`);
+                fs.mkdirSync(newDir, {recursice: true});
+            }
+            if (!fs.existsSync(newDir)) {
+                log.warn(`not moving ${src} because ${newDir} does not exist`);
+                return false;
+            }
         }
         const dirStats = fs.statSync(newDir);
         if (!dirStats.isDirectory()) {
@@ -716,6 +743,9 @@ const showStats = () => {
         log.info(`Total    files:\t${count}`);
         log.info(`Wrong yr files:\t${badCount}`);
         log.info(`Moved    files:\t${moveCount}`);
+        log.info(`Bad      files:\t${badCount}`);
+        log.info(`Deleted  files:\t${deleteCount}`);
+        log.info(`toDelete files:\t${toDeleteCount}`);
     }
 
 }
