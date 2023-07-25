@@ -313,6 +313,10 @@ const deleteFile = ({toDelete, src}) => {
         log.warn(`Not deleting ${src} because DEST:${toDelete} does not exist`);
         return false;
     }
+    if (toDelete === src) {
+        log.warn(`Not deleting ${toDelete} because it is the same file as ${src}`);
+        return false;
+    }
     try {
         const srcStat = fs.statSync(src);
         const deleteStat = fs.statSync(toDelete);
