@@ -8,15 +8,22 @@
 use strict;
 use Cwd qw(getcwd);
 use Getopt::Long;
-use File::Copy;
-use File::Basename;
+## cp keeps timestamp?
+use File::Copy "cp";
 use Data::Dumper;
+use File::Basename qw/dirname/;
+my $valid_photo_extensions = "AVIF, BMP, GIF, HEIC, ICO, JPG, PNG, TIFF, WEBP, RAW";
+my $valid_video_extensions ="3GP, 3G2, ASF, AVI, DIVX, M2T, M2TS, M4V, MKV, MMV, MOD, MOV, MP4, MPG, MTS, TOD, WMV";
+my @extensions = map {s/^\s*/\./; s/\s*$//; $_} split (/,/,"$valid_photo_extensions,$valid_video_extensions");
+my $extensionsRegex = join ('$|',@extensions).'$';
+
+
 
 my %options=();
 
 $options{'takeout-list'} = 'takeoutlist.txt';
 $options{'photos-list'} = 'photoslist.txt';
-GetOptions (\%options,qw(--compare --make-list --takeout-dir=s --photos-dir=s --takeout-list=s --photos-list=s -h --help));
+GetOptions (\%options,qw(--compare --make-list --takeout-dir=s --photos-dir=s --takeout-list=s --photos-list=s -h --help --include-all --copy-photos-to-dir=s --copy-takeout-to-dir=s));
 
 if ($options{"h"} || $options{'help'}) {
 	show_help();
@@ -32,8 +39,13 @@ Jeremy Hubble April 28, 2024
 --make-list		Create filelist (via exiftool)
 --photos-dir dir	fingerprint file output using jdupes
 --takeout-dir dir	dup file
---photos-list file	directory to do searches (default ./)
---takeout-list file	directory where data files (filelists, etc.) are located (default ./)
+--photos-list file	directory to do searches (default $options{'photos-list'})
+--takeout-list file	directory where data files (filelists, etc.) are located (default $options{'takeout-list'})
+--include-all		default is faluse. Include all files in comparison if set. Otherwise, only include valid google photos extensions
+		photo extensions: $valid_photo_extensions
+		video extensions: $valid_video_extensions
+--copy-photos-to-dir dir	Copy photos not in takeout to directory tree
+--copy-takeout-to-dir dir	Copy takeout files not in photos to diectory tree
 -help			print help
 -h			print help
 
@@ -74,18 +86,25 @@ if ($options{"compare"}) {
 	my %photoNameIndex = %{$photoRef};
 
 	print "TAKEOUT LIST: ",$options{'takeout-list'},"\n";
-	print "PHOTO LIST  : ",$options{'photo-list'},"\n";
+	print "PHOTO LIST  : ",$options{'photos-list'},"\n";
+	if ($options{'copy-photos-to-dir'}) {
+		print "COPYING missing photos to: $options{'copy-photos-to-dir'}\n";
+	}
+	if ($options{'copy-takeout-to-dir'}) {
+		print "COPYING missing photos to: $options{'copy-takeout-to-dir'}\n";
+	}
 
-	my ($not_in_photos, $different_in_photos, $same_in_photos) = compareLists(\%takeoutNameIndex, \%photoNameIndex);
-	my ($not_in_takeout) = compareLists(\%photoNameIndex, \%takeoutNameIndex);
+	my ($not_in_photos, $different_in_photos, $same_in_photos) = compareNameLists(\%takeoutNameIndex, \%photoNameIndex, $options{'copy-takeout-to-dir'});
+	my ($not_in_takeout) = compareNameLists(\%photoNameIndex, \%takeoutNameIndex, $options{'copy-photos-to-dir'});
 
 	my $not_photos = scalar @$not_in_photos;
 	my $not_takeout = scalar @$not_in_takeout;
 	my $same_count = scalar @$same_in_photos;
 	my $diff_count = scalar @$different_in_photos;
 
-	print "\nNot in photos:\n",join("\n",@$not_in_photos),"\n";
-	print "\nNot in takeout:\n",join("\n",@$not_in_takeout),"\n";
+	print "\nNot in photos:\n",join("\n",map {"$takeoutNameIndex{$_}[0]"} @$not_in_photos),"\n";
+	print "\n====================================================================\n";
+	print "\nNot in takeout:\n",join("\n",map {$photoNameIndex{$_}[0]} @$not_in_takeout),"\n";
 	print <<EOF1;
 	Not in photos :             $not_photos
 	Not in takeout:             $not_takeout
@@ -94,25 +113,37 @@ if ($options{"compare"}) {
 EOF1
 }
 
-sub compareLists  {
+# compare two lists.
+# Arguments:
+#   list1
+#   list2
+#   optional directory to copy items that are not in list 2
+sub compareNameLists  {
 	my @lists = @_;
 	my %list1 = %{$lists[0]};
 	my %list2 = %{$lists[1]};
+	my $copy_target = $lists[2];
 	my @not_in_second;
 	my @same_in_second;
 	my @different_in_second;
 	foreach my $index (keys %list1) {
-		if (exists $list2{$index}) {
-			if (compareArrays($list1{$index}, $list2{$index})) {
-				push @same_in_second, $index;
+		## only process non-json files unless otherwise specified
+		if (!$options{'include-all'} || $index =~ /$extensionsRegex/i) {
+			if (exists $list2{$index}) {
+				if (compareArrays($list1{$index}, $list2{$index})) {
+					push @same_in_second, $index;
+				}
+				else {
+					push @different_in_second, $index;
+				}
+
 			}
 			else {
-				push @different_in_second, $index;
+				push @not_in_second, $index;
+				if ($copy_target) {
+					copyToTree($copy_target, $list1{$index}[0]);
+				}
 			}
-
-		}
-		else {
-			push @not_in_second, $index;
 		}
 	}
 	return (\@not_in_second, \@different_in_second, \@same_in_second);
@@ -204,6 +235,8 @@ sub aug_basename {
 	return "$bname\t$_";
 }
 
+
+## some remnants from another script for reference. May use them eventually
 sub size_sort
 {
 	my ($bname,$ts, $fname, $size, $width, $height) = split /\t/, $a;
@@ -272,4 +305,31 @@ sub list_by_extension {
 
 }
 
+sub mkdir_recursive {
+    my $path = shift;
+    mkdir_recursive(dirname($path)) if not -d dirname($path);
+    mkdir $path or die "Could not make dir $path: $!" if not -d $path;
+    return;
+}
+
+sub mkdir_and_copy {
+    my ($from, $to) = @_;
+    mkdir_recursive(dirname($to));
+    system ('cp','-p',$from,$to);
+    #copy($from, $to) or die "Couldn't copy: $!";
+    return;
+}
+
+sub copyToTree {
+	my ($copyTarget, $itemInfo) = @_;
+	print "Copy target: $copyTarget\n";
+	print "Item Info: $itemInfo\n";
+	my ($bname,$ts, $fname, $size, $width, $height) = split /\t/, $itemInfo;
+	$copyTarget =~ s~/$~~;
+	$fname =~ s~^/~~;
+	my $dest = "$copyTarget/$fname";
+	print "Copy $fname   :  $dest\n";
+	mkdir_and_copy($fname, $dest);
+}
+	
 
