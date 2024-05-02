@@ -35,13 +35,13 @@ compareToGoogle.pl
 Find duplicate images and organize library
 Jeremy Hubble April 28, 2024
 
---compare		Compare files ; If  dir is specified, filelist will be created
+--compare		Compare files ; If  dir is specified and list does not exist, filelist will be created
 --make-list		Create filelist (via exiftool)
 --photos-dir dir	fingerprint file output using jdupes
 --takeout-dir dir	dup file
 --photos-list file	directory to do searches (default $options{'photos-list'})
 --takeout-list file	directory where data files (filelists, etc.) are located (default $options{'takeout-list'})
---include-all		default is faluse. Include all files in comparison if set. Otherwise, only include valid google photos extensions
+--include-all		default is false. Include all files in comparison if set. Otherwise, only include valid google photos extensions
 		photo extensions: $valid_photo_extensions
 		video extensions: $valid_video_extensions
 --copy-photos-to-dir dir	Copy photos not in takeout to directory tree
@@ -67,10 +67,11 @@ exit();
 }
 
 if ($options{"make-list"} || $options{compare}) {
-	if ($options{'takeout-dir'}) {
+	# only make new list if we don't have list, or we have been explicitly asked
+	if ($options{'takeout-dir'} && ($options{'make-list'} || !-f $options{'takeout-list'})) {
 		&create_exif_list($options{'takeout-dir'}, $options{'takeout-list'});
 	}
-	if ($options{'photos-dir'}) {
+	if ($options{'photos-dir'} && ($options{'make-list'} || !-f $options{'photos-list'})) {
 		&create_exif_list($options{'photos-dir'}, $options{'photos-list'});
 	}
 }
@@ -128,7 +129,7 @@ sub compareNameLists  {
 	my @different_in_second;
 	foreach my $index (keys %list1) {
 		## only process non-json files unless otherwise specified
-		if (!$options{'include-all'} || $index =~ /$extensionsRegex/i) {
+		if ($options{'include-all'} || $index =~ /$extensionsRegex/i) {
 			if (exists $list2{$index}) {
 				if (compareArrays($list1{$index}, $list2{$index})) {
 					push @same_in_second, $index;
@@ -140,6 +141,7 @@ sub compareNameLists  {
 			}
 			else {
 				push @not_in_second, $index;
+
 				if ($copy_target) {
 					copyToTree($copy_target, $list1{$index}[0]);
 				}
@@ -173,7 +175,6 @@ sub create_exif_list() {
 
 	print "Created $OUTFILE\n";
 }
-
 
 sub buildTimeHash {
 	my ($path) = @_;
