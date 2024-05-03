@@ -23,7 +23,7 @@ my %options=();
 
 $options{'takeout-list'} = 'takeoutlist.txt';
 $options{'photos-list'} = 'photoslist.txt';
-GetOptions (\%options,qw(--compare --make-list --takeout-dir=s --photos-dir=s --takeout-list=s --photos-list=s -h --help --include-all --copy-photos-to-dir=s --copy-takeout-to-dir=s));
+GetOptions (\%options,qw(--compare --make-list --takeout-dir=s --photos-dir=s --takeout-list=s --photos-list=s -h --help --include-all --copy-photos-to-dir=s --copy-takeout-to-dir=s --just-photos --print-same));
 
 if ($options{"h"} || $options{'help'}) {
 	show_help();
@@ -46,6 +46,8 @@ Jeremy Hubble April 28, 2024
 		video extensions: $valid_video_extensions
 --copy-photos-to-dir dir	Copy photos not in takeout to directory tree
 --copy-takeout-to-dir dir	Copy takeout files not in photos to diectory tree
+--just-photos		just check to see if takeout items are missing from photos (default false)
+--print-same		print items the same in both (default false)
 -help			print help
 -h			print help
 
@@ -61,6 +63,12 @@ compareToGoogle.pl --make-list --photos-list filelist.txt --photos-dir /pathToPh
 
 # compare the files based on created list
 compareToGoogle.pl --compare --photos-list photoslist.txt --takeout-list takeoutlist.txt
+EOF1
+
+print <<'EOF1';
+# a commandline to manuall generate the list from a list of files
+cat newFiles.txt|xargs -L 1 -I% exiftool -fast -fast2 -f -p '$DateTimeOriginal    $directory/$filename    $FileSize#      $ImageWidth
+$ImageHeight    $DocumentName#' % >> myList.txt
 EOF1
 
 exit();
@@ -79,15 +87,27 @@ else {
 	show_help();
 }
 
-if ($options{"compare"}) {
-	## start with a simple name compare
-	my $takeoutRef = buildNameHash($options{'takeout-list'});
-	my %takeoutNameIndex = %{$takeoutRef};
-	my $photoRef = buildNameHash($options{'photos-list'});
-	my %photoNameIndex = %{$photoRef};
+my %takeoutNameIndex;
+my %photoNameIndex;
 
+my %takeoutTimeIndex;
+my %photoTimeIndex;
+
+if ($options{"compare"}) {
 	print "TAKEOUT LIST: ",$options{'takeout-list'},"\n";
 	print "PHOTO LIST  : ",$options{'photos-list'},"\n";
+
+	## start with a simple name compare
+	my $takeoutRef = buildNameHash($options{'takeout-list'});
+	%takeoutNameIndex = %{$takeoutRef};
+	my $photoRef = buildNameHash($options{'photos-list'});
+	%photoNameIndex = %{$photoRef};
+
+	my $takeoutTimeRef = buildTimeHash($options{'takeout-list'});
+	%takeoutTimeIndex = %{$takeoutTimeRef};
+	my $photoTimeRef = buildTimeHash($options{'photos-list'});
+	%photoTimeIndex = %{$photoTimeRef};
+
 	if ($options{'copy-photos-to-dir'}) {
 		print "COPYING missing photos to: $options{'copy-photos-to-dir'}\n";
 	}
@@ -95,24 +115,91 @@ if ($options{"compare"}) {
 		print "COPYING missing photos to: $options{'copy-takeout-to-dir'}\n";
 	}
 
-	my ($not_in_photos, $different_in_photos, $same_in_photos) = compareNameLists(\%takeoutNameIndex, \%photoNameIndex, $options{'copy-takeout-to-dir'});
-	my ($not_in_takeout) = compareNameLists(\%photoNameIndex, \%takeoutNameIndex, $options{'copy-photos-to-dir'});
+	my ($not_in_photos, $different_in_photos, $same_in_photos, $photo_time_exists) = compareNameLists(\%takeoutNameIndex, \%photoNameIndex, $options{'copy-takeout-to-dir'}, \%takeoutTimeIndex, \%photoTimeIndex);
+	my ($not_in_takeout,$x,$y,$takeout_time_exists) = compareNameLists(\%photoNameIndex, \%takeoutNameIndex, $options{'copy-photos-to-dir'}, \%photoTimeIndex, \%takeoutTimeIndex);
 
 	my $not_photos = scalar @$not_in_photos;
+	my $not_photos_but_time = scalar @$photo_time_exists;
 	my $not_takeout = scalar @$not_in_takeout;
+	my $not_takeout_but_time = scalar @$takeout_time_exists;
 	my $same_count = scalar @$same_in_photos;
 	my $diff_count = scalar @$different_in_photos;
 
-	print "\nNot in photos:\n",join("\n",map {"$takeoutNameIndex{$_}[0]"} @$not_in_photos),"\n";
+	print "\nNot in photos:\n",join("\n",map {"TKT:\t$takeoutNameIndex{$_}[0]"} @$not_in_photos),"\n";
 	print "\n====================================================================\n";
-	print "\nNot in takeout:\n",join("\n",map {$photoNameIndex{$_}[0]} @$not_in_takeout),"\n";
+	if (!$options{'just-photos'}) {
+		print "\nNot in takeout:\n",join("\n",map {"PHT:\t$photoNameIndex{$_}[0]"} @$not_in_takeout),"\n";
+		print "\n====================================================================\n";
+	}
+	print "\nNot in photos, but items with same times in photos\n";
+	map { &printSameTimes($_) } @$photo_time_exists;
+	print "\n====================================================================\n";
+	if (!$options{'just-photos'}) {
+		print "\nNot in takeout, but items with same times in takeout\n";
+		map { &printSameTimes($_) } @$takeout_time_exists;
+		print "\n====================================================================\n";
+	}
+	if ($options{'print-same'}) {
+		print "\n====================================================================\n";
+		print "\nSame filename found in both\n";
+		print join("\n",map {"SME:\t$photoNameIndex{$_}[0]"} @$same_in_photos),"\n";
+	}
 	print <<EOF1;
 	Not in photos :             $not_photos
+	  - but some matching time: $not_photos_but_time
 	Not in takeout:             $not_takeout
+	  - but some matching time: $not_takeout_but_time
 	Same name, different count: $diff_count
 	Same name, same count     : $same_count
 EOF1
 }
+
+
+sub printSameTimes {
+	my ($index) = @_;
+	my $photoElem = $photoNameIndex{$index};
+	my $takeoutElem = $takeoutNameIndex{$index};
+	my $count =0;
+
+	if ($photoElem) {
+		my @photoArray = @$photoElem;
+		foreach my $elem (@photoArray) {
+			$count += findSameTime($index, $elem, \%takeoutTimeIndex);	
+		}
+	}
+	if ($takeoutElem) {
+		my @takeoutArray = @$takeoutElem;
+		foreach my $elem (@takeoutArray) {
+			$count += findSameTime($index, $elem, \%photoTimeIndex);	
+		}
+
+	}
+	if ($count == 0) {
+		print "MATCHLESS: $index\n";
+	}
+}
+
+sub findSameTime {
+	my ($key, $baseItemInfo, $hashRef) = @_;
+	my $count = 0;
+	my %timeIndex = %$hashRef;
+	my ($obname,$ots, $ofname, $osize, $owidth, $oheight) = split /\t/, $baseItemInfo;
+	if ($ots eq '-') {
+		return 0;
+	}
+	if (exists $timeIndex{$ots}) {
+		my @timeArr = @{$timeIndex{$ots}};
+		foreach my $itemInfo (@timeArr) {
+			my ($bname,$ts, $fname, $size, $width, $height) = split /\t/, $itemInfo;
+			if ($size == $osize) {
+				print "SIZE MATCH:\n   SRC:\t$baseItemInfo\n   DST:\t$itemInfo\n";
+				$count++;
+			}
+		}
+	}
+	return $count;
+}
+
 
 # compare two lists.
 # Arguments:
@@ -124,9 +211,12 @@ sub compareNameLists  {
 	my %list1 = %{$lists[0]};
 	my %list2 = %{$lists[1]};
 	my $copy_target = $lists[2];
+	my %dateList1 = %{$lists[3]};
+	my %dateList2 = %{$lists[4]};
 	my @not_in_second;
 	my @same_in_second;
 	my @different_in_second;
+	my @time_exists;
 	foreach my $index (keys %list1) {
 		## only process non-json files unless otherwise specified
 		if ($options{'include-all'} || $index =~ /$extensionsRegex/i) {
@@ -141,6 +231,11 @@ sub compareNameLists  {
 			}
 			else {
 				push @not_in_second, $index;
+				my $itemInfo = $list1{$index}[0];
+				my ($bname,$ts, $fname, $size, $width, $height) = split /\t/, $itemInfo;
+				if (exists $dateList2{$ts}) {
+					push @time_exists, $index;
+				}
 
 				if ($copy_target) {
 					copyToTree($copy_target, $list1{$index}[0]);
@@ -148,7 +243,7 @@ sub compareNameLists  {
 			}
 		}
 	}
-	return (\@not_in_second, \@different_in_second, \@same_in_second);
+	return (\@not_in_second, \@different_in_second, \@same_in_second,\@time_exists);
 }
 sub compareArrays {
 	my ($arr1, $arr2) = @_;
@@ -183,7 +278,7 @@ sub buildTimeHash {
 	while(<F>) {
 		my $withBaseName = aug_basename($_);
 		my ($bname, $timestamp ) = split /\t/, $withBaseName;
-		if (!timeHash{$timestamp})  {
+		if (!$timeHash{$timestamp})  {
 			$timeHash{$timestamp} = [];
 		}
 		push @{$timeHash{$timestamp}}, $withBaseName;
@@ -236,75 +331,6 @@ sub aug_basename {
 	return "$bname\t$_";
 }
 
-
-## some remnants from another script for reference. May use them eventually
-sub size_sort
-{
-	my ($bname,$ts, $fname, $size, $width, $height) = split /\t/, $a;
-	my ($bname2, $ts2, $fname2, $size2, $width2, $height2) = split /\t/, $b;
-	return ($bname <=> $bname2 
-		or
-	$fname cmp $fname2);
-}
-
-sub sort_by_size
-{
-	my ($bname,$ts, $fname, $size, $width, $height) = split /\t/, $a;
-	my ($bname2, $ts2, $fname2, $size2, $width2, $height2) = split /\t/, $b;
-	return $size <=> $size2;
-}
-sub name_sort
-{
-	my ($bname, $ts, $fname, $size, $width, $height) = split /\t/, $a;
-	my ($bname2, $ts2, $fname2, $size2, $width2, $height2) = split /\t/, $b;
-	# a < b -1   a == b 0   a>b 1
-	my $rdir = $fname;
-	my $rdir2 = $fname2;
-	$rdir =~ s/^\.\///;
-	$rdir2 =~ s/^\.\///;
-	$rdir =~ s/\/.+$//;
-	$rdir2 =~ s/\/.+$//;
-	my $base = $rdir2 =~ /^\d|^moreYears/ - $rdir =~/^\d|^moreYears/;
-	return ($base 
-		or
-	$fname <=> $fname2 
-		or
-	$width cmp $width2);
-}
-
-# to see sorted by amount
-#cat allFiles.txt|sort -t$'\t' -k3 -n |cut -f2
-sub list_by_extension {
-	my ($listPath) = @_;
-	print "======== LIST BY EXTENSION ======\n";
-	open F, $listPath;
-	my %HOA;
-	while(<F>) {
-		chomp; 
-		my ($ts, $fname, $size, $width, $height) = split /\t/;
-		my $ext = $fname;
-		$ext =~ s/^.+\.//;
-		if (!$HOA{$ext})  {
-			$HOA{$ext} = [];
-		}
-		push @{$HOA{$ext}}, $_;
-	}
-	close F;
-	for my $ext (sort keys %HOA) {
-		my @arr = @{$HOA{$ext}};
-		my $totalSize =0;
-		foreach (@arr) {
-			my ($ts, $fname, $size, $width, $height) = split /\t/;
-			$totalSize += $size;
-		}
-
-		print "$ext\t",($#arr+1),"\t: $totalSize\n";
-		if ($#arr < 10) {
-			print @arr, "\n";
-		}
-	}
-
-}
 
 sub mkdir_recursive {
     my $path = shift;
